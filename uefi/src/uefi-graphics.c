@@ -1,9 +1,15 @@
 #include "smalldoku-uefi/smalldoku-uefi-graphics.h"
 
+#include <efilib.h>
+
+static EFI_GUID GRAPHICS_PROTOCOL_GUID = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+
+#define MIN_NUM(a, b) (((a) < (b)) ? (a) : (b))
+
 static uint32_t convert_rgba_to_mode(uefi_graphics_t *graphics, uint32_t rgb) {
     switch (graphics->protocol->Mode->Info->PixelFormat) {
         case PixelRedGreenBlueReserved8BitPerColor:
-            return ((rgb & 0xFF0000) >> 24) |
+            return ((rgb & 0xFF0000) >> 16) |
                    ((rgb & 0x00FF00) >> 8) |
                    ((rgb & 0x0000FF) << 8);
 
@@ -12,13 +18,15 @@ static uint32_t convert_rgba_to_mode(uefi_graphics_t *graphics, uint32_t rgb) {
 
         default:
             __asm__("ud2"); /* Should never happen */
-            return 0;
+            return 0xFFFFFF;
     }
 }
 
 static void set_pixel(uefi_graphics_t *graphics, uint32_t x, uint32_t y, uint32_t native_color) {
-    EFI_PHYSICAL_ADDRESS framebuffer_base = graphics->protocol->Mode->FrameBufferBase;
-    uint32_t pixels_per_scan_line = graphics->protocol->Mode->Info->PixelsPerScanLine;
+    char *framebuffer_base = graphics->pixel_buffer ? graphics->pixel_buffer
+                                                    : (char *) graphics->protocol->Mode->FrameBufferBase;
+    uint32_t pixels_per_scan_line = graphics->pixel_buffer ? graphics->width
+                                                           : graphics->protocol->Mode->Info->PixelsPerScanLine;
 
     *((uint32_t *) (framebuffer_base + 4 * pixels_per_scan_line * y + 4 * x)) = native_color;
 }
@@ -33,9 +41,162 @@ static uint32_t strlen(const char *str) {
     return len;
 }
 
-uefi_graphics_t uefi_graphics_initialize(EFI_GRAPHICS_OUTPUT_PROTOCOL *protocol) {
-    uefi_graphics_t graphics = {protocol, NULL};
-    return graphics;
+uefi_graphics_init_status_t uefi_graphics_initialize(smalldoku_uefi_application_t *application, uefi_graphics_t *out) {
+    EFI_STATUS status;
+    UINTN handle_count;
+    EFI_HANDLE *handles = NULL;
+
+    status = application->boot_services->LocateHandleBuffer(
+            ByProtocol,
+            &GRAPHICS_PROTOCOL_GUID,
+            NULL,
+            &handle_count,
+            &handles
+    );
+
+    if (EFI_ERROR(status)) {
+        if (handles != NULL) {
+            application->boot_services->FreePool(handles);
+        }
+
+        return status == EFI_NOT_FOUND ? UEFI_GRAPHICS_NO_PROTOCOL : UEFI_GRAPHICS_UNKNOWN_ERROR;
+    }
+
+    Print(u"Found %d graphics protocols\n", handle_count);
+
+    for (uint32_t i = 0; i < handle_count; i++) {
+        EFI_GRAPHICS_OUTPUT_PROTOCOL *opened_protocol;
+
+        status = application->boot_services->OpenProtocol(
+                handles[i],
+                &GRAPHICS_PROTOCOL_GUID,
+                (void **) &opened_protocol,
+                application->image_handle,
+                NULL,
+                EFI_OPEN_PROTOCOL_EXCLUSIVE
+        );
+
+        if (EFI_ERROR(status)) {
+            continue;
+        }
+
+        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mode_information;
+        UINTN mode_information_size;
+        status = opened_protocol->QueryMode(opened_protocol, 0, &mode_information_size, &mode_information);
+        if (EFI_ERROR(status)) {
+            if (status == EFI_NOT_STARTED) {
+                if (EFI_ERROR(opened_protocol->SetMode(opened_protocol, 0))) {
+                    application->boot_services->CloseProtocol(
+                            handles[i],
+                            &GRAPHICS_PROTOCOL_GUID,
+                            application->image_handle,
+                            NULL
+                    );
+                    continue;
+                }
+            } else {
+                application->boot_services->CloseProtocol(
+                        handles[i],
+                        &GRAPHICS_PROTOCOL_GUID,
+                        application->image_handle,
+                        NULL
+                );
+                continue;
+            }
+        }
+
+        if (mode_information) {
+            application->boot_services->FreePool(mode_information);
+        }
+
+        uint32_t most_suitable_width = 0;
+        uint32_t most_suitable_height = 0;
+        uint32_t most_suitable_mode_id = 0;
+        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION most_suitable_mode;
+
+        for (uint32_t mode_i = 0; mode_i < opened_protocol->Mode->MaxMode; mode_i++) {
+            status = opened_protocol->QueryMode(opened_protocol, mode_i, &mode_information_size, &mode_information);
+
+            if (EFI_ERROR(status)) {
+                continue;
+            }
+
+            Print(u"Considering video mode %d with %dx%d, current mode is %d with %dx%d\n",
+                  mode_i, mode_information->HorizontalResolution, mode_information->VerticalResolution,
+                  most_suitable_mode_id, most_suitable_width, most_suitable_height);
+            if (mode_information->PixelFormat != PixelBitMask) {
+                if (
+                        (!most_suitable_width || !most_suitable_height) ||
+                        (
+                                most_suitable_width < mode_information->HorizontalResolution &&
+                                mode_information->HorizontalResolution <= 1920 &&
+                                most_suitable_height < mode_information->VerticalResolution &&
+                                mode_information->VerticalResolution <= 1080
+                        )
+                        ) {
+                    most_suitable_width = mode_information->HorizontalResolution;
+                    most_suitable_height = mode_information->VerticalResolution;
+                    most_suitable_mode_id = mode_i;
+
+                    application->boot_services->CopyMem(
+                            &most_suitable_mode,
+                            mode_information,
+                            MIN_NUM(sizeof(most_suitable_mode), mode_information_size)
+                    );
+                }
+            }
+
+            application->boot_services->FreePool(mode_information);
+        }
+
+        if (most_suitable_width && most_suitable_height) {
+            Print(u"Selected video mode %d: %dx%d\n", most_suitable_mode_id, most_suitable_mode.HorizontalResolution,
+                  most_suitable_mode.VerticalResolution);
+            if (EFI_ERROR(opened_protocol->SetMode(opened_protocol, most_suitable_mode_id))) {
+                application->boot_services->CloseProtocol(
+                        handles[i],
+                        &GRAPHICS_PROTOCOL_GUID,
+                        application->image_handle,
+                        NULL
+                );
+                continue;
+            }
+
+            application->boot_services->FreePool(handles);
+
+            out->protocol = opened_protocol;
+            out->font = NULL;
+            out->font_scale = 0;
+            out->width = most_suitable_mode.HorizontalResolution;
+            out->height = most_suitable_mode.VerticalResolution;
+            out->pixel_format = most_suitable_mode.PixelFormat;
+
+            if (most_suitable_mode.PixelFormat != PixelBltOnly) {
+                Print(u"Using direct framebuffer for video operations!\n");
+                out->pixel_buffer = NULL;
+            } else {
+                Print(u"Using backbuffer for video operations!\n");
+                application->boot_services->AllocatePool(
+                        EfiLoaderData,
+                        sizeof(uint32_t) * out->width * out->height,
+                        &out->pixel_buffer
+                );
+            }
+
+            return UEFI_GRAPHICS_OK;
+        }
+
+        application->boot_services->CloseProtocol(
+                handles[i],
+                &GRAPHICS_PROTOCOL_GUID,
+                application->image_handle,
+                NULL
+        );
+    }
+
+    application->boot_services->FreePool(handles);
+
+    return UEFI_GRAPHICS_NO_SUITABLE_MODE;
 }
 
 void uefi_graphics_set_font(uefi_graphics_t *graphics, uefi_graphics_psf_font_t *font, uint8_t font_scale) {
@@ -96,6 +257,41 @@ void uefi_graphics_draw_text(uefi_graphics_t *graphics, uint32_t x, uint32_t y, 
         }
 
         text++;
-        x += graphics->font->width + 1;
+        x += graphics->font->width * scale + 1;
+    }
+}
+
+void uefi_graphics_draw_raw(
+        uefi_graphics_t *graphics,
+        uint32_t x,
+        uint32_t y,
+        uint32_t width,
+        uint32_t height,
+        const void *data
+) {
+    const uint32_t *img = data;
+
+    for (uint32_t img_y = 0; img_y < height; img_y++) {
+        for (uint32_t img_x = 0; img_x < width; img_x++) {
+            uint32_t color = convert_rgba_to_mode(graphics, img[img_x + img_y * width]);
+
+            if (color & 0x000000FF) {
+                set_pixel(graphics, x + img_x, y + img_y, color);
+            }
+        }
+    }
+}
+
+void uefi_graphics_flush(uefi_graphics_t *graphics) {
+    if (graphics->pixel_buffer) {
+        graphics->protocol->Blt(
+                graphics->protocol,
+                graphics->pixel_buffer,
+                EfiBltBufferToVideo,
+                0, 0,
+                0, 0,
+                graphics->width, graphics->height,
+                0
+        );
     }
 }

@@ -3,6 +3,8 @@
 
 #include <smalldoku/smalldoku.h>
 #include <immintrin.h>
+
+#include "smalldoku-uefi/smalldoku-uefi.h"
 #include "smalldoku-uefi/smalldoku-uefi-graphics.h"
 
 const uint32_t SCALE = 80;
@@ -14,14 +16,29 @@ const uint32_t PADDING_Y = (1080 / 2) - (HEIGHT / 2);
 #define _STR_MACRO2(x) #x
 #define _STR_MACRO(x) _STR_MACRO2(x)
 
-extern uefi_graphics_psf_font_t font_psfu;
-__asm__(""
-        ".section \".rodata\", \"a\", @progbits\n"
-        "font_psfu:"
-        ".incbin \"" _STR_MACRO(SMALLDOKU_UEFI_FONT_FILE) "\"\n"
-        ".previous");
+#define INCLUDE_BINARY(type, name, path)               \
+    extern type name;                                  \
+    __asm__(""                                         \
+            ".section \".rodata\", \"a\", @progbits\n" \
+            #name ":\n"                                \
+            ".incbin \"" _STR_MACRO(path) "\"\n"       \
+            ".previous")
 
-static void draw(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid)) {
+INCLUDE_BINARY(uefi_graphics_psf_font_t, font_psfu, SMALLDOKU_UEFI_FONT_FILE);
+INCLUDE_BINARY(char, cursor_raw, SMALLDOKU_UEFI_CURSOR_FILE);
+
+#define I_MIN(a, b) (((a) < (b)) ? (a) : (b))
+#define I_MAX(a, b) (((a) > (b)) ? (a) : (b))
+
+static EFI_STATUS report_fatal_error(EFI_SYSTEM_TABLE *system_table, uefi_graphics_t *graphics, const char *error) {
+    uefi_graphics_draw_rect(graphics, 0, 0, 1920, 1080, 0xFF0000);
+    uefi_graphics_draw_text(graphics, 20, 20, error, 0xFFFFFF);
+
+    system_table->BootServices->Stall(1000 * 1000 * 10);
+    return EFI_UNSUPPORTED;
+}
+
+static void draw(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid), uint32_t mouse_x, uint32_t mouse_y) {
     uefi_graphics_draw_rect(graphics, 0, 0, 1920, 1080, 0xFFFFFF);
 
     for (uint8_t row = 0; row < SMALLDOKU_GRID_HEIGHT; row++) {
@@ -80,67 +97,87 @@ static void draw(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid)) {
             uefi_graphics_draw_rect(graphics, start_x, start_y - 1, WIDTH, 3, 0x000000);
         }
     }
+
+    uefi_graphics_draw_raw(graphics, mouse_x, mouse_y, 24, 24, &cursor_raw);
+    uefi_graphics_flush(graphics);
 }
 
 static uint8_t generate_random_number(uint8_t min, uint8_t max) {
+    static uint8_t counter = 0;
+    counter++;
+
     uint32_t generated_value;
-    _rdrand32_step(&generated_value);
+    // _rdrand32_step(&generated_value);
+    generated_value = counter;
 
     return generated_value % (max + 1 - min) + min;
 }
 
-EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_table) {
+__attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_table) {
     InitializeLib(image_handle, system_table);
+    smalldoku_uefi_application_t application = { system_table, system_table->BootServices, image_handle };
 
     Print(u"Smalldoku starting!\n");
 
-    EFI_GRAPHICS_OUTPUT_PROTOCOL *graphics_protocol;
-    if (EFI_ERROR(
-            system_table->BootServices->LocateProtocol(&GraphicsOutputProtocol, NULL, (void **) &graphics_protocol))) {
-        Print(u"Failed to find a graphics buffer!\n");
-        system_table->BootServices->Stall(1000 * 1000 * 5);
-        return EFI_UNSUPPORTED;
+    uefi_graphics_t graphics;
+    switch (uefi_graphics_initialize(&application, &graphics)) {
+        case UEFI_GRAPHICS_OK:
+            break;
+
+        case UEFI_GRAPHICS_NO_PROTOCOL:
+            Print(u"No graphics protocol found!");
+            return EFI_UNSUPPORTED;
+
+        case UEFI_GRAPHICS_NO_SUITABLE_MODE:
+            Print(u"No suitable graphics mode found!");
+            return EFI_UNSUPPORTED;
+
+        case UEFI_GRAPHICS_UNKNOWN_ERROR:
+            Print(u"An error occurred while initializing the graphics!");
+            return EFI_PROTOCOL_ERROR;
     }
 
-    uint8_t graphics_mode_found = 0;
-    for (uint32_t i = 0; i < graphics_protocol->Mode->MaxMode; i++) {
-        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *graphics_info;
-        UINTN graphics_info_size;
-        EFI_STATUS graphics_mode_status = graphics_protocol->QueryMode(
-                graphics_protocol,
-                i,
-                &graphics_info_size,
-                &graphics_info
-        );
-
-        if (!EFI_ERROR(graphics_mode_status)) {
-            if (
-                    graphics_info->VerticalResolution == 1080 &&
-                    graphics_info->HorizontalResolution == 1920
-                    ) {
-                Print(u"Selecting graphics mode %d!\n", i);
-
-                graphics_mode_found = 1;
-                graphics_protocol->SetMode(graphics_protocol, i);
-                break;
-            }
-        }
-    }
-
-    if (!graphics_mode_found) {
-        Print(u"Failed to find a suitable graphics mode!\n");
-        system_table->BootServices->Stall(1000 * 1000 * 5);
-        return EFI_UNSUPPORTED;
-    }
-
-    uefi_graphics_t graphics = uefi_graphics_initialize(graphics_protocol);
     uefi_graphics_set_font(&graphics, &font_psfu, 3);
+
+    EFI_SIMPLE_POINTER_PROTOCOL *pointer_protocol;
+    if (EFI_ERROR(
+            system_table->BootServices->LocateProtocol(&SimplePointerProtocol, NULL, (void **) &pointer_protocol))) {
+        return report_fatal_error(system_table, &graphics, "Failed to find a pointer protocol!");
+    }
+
+    EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL *text_input_protocol;
+    if (EFI_ERROR(system_table->BootServices->LocateProtocol(&SimpleTextInputExProtocol, NULL,
+                                                             (void **) &text_input_protocol))) {
+        return report_fatal_error(system_table, &graphics, "Failed to find a text input protocol!");
+    }
 
     SMALLDOKU_GRID(grid);
     smalldoku_init(grid);
     smalldoku_fill_grid(grid, generate_random_number);
     smalldoku_hammer_grid(grid, 5, generate_random_number);
-    draw(&graphics, grid);
+
+    if (pointer_protocol->Mode->ResolutionY == 0) {
+        return report_fatal_error(system_table, &graphics, "Pointer resolution x is 0!");
+    }
+
+    uint32_t mouse_x = 1920 / 2;
+    uint32_t mouse_y = 1080 / 2;
+    draw(&graphics, grid, mouse_x, mouse_y);
+
+    pointer_protocol->Reset(pointer_protocol, TRUE);
+
+    while (1) {
+        uint64_t event_index;
+        system_table->BootServices->WaitForEvent(1, &pointer_protocol->WaitForInput, &event_index);
+
+        EFI_SIMPLE_POINTER_STATE pointer_state;
+        pointer_protocol->GetState(pointer_protocol, &pointer_state);
+
+        mouse_x = I_MIN(0, I_MAX(1920, mouse_x + pointer_state.RelativeMovementX));
+        mouse_y = I_MIN(0, I_MAX(1080, mouse_y + pointer_state.RelativeMovementY));
+        draw(&graphics, grid, mouse_x, mouse_y);
+        uefi_graphics_draw_text(&graphics, 20, 20, "Pointer moved!", 0x000000);
+    }
 
     system_table->BootServices->Stall(1000 * 1000 * 30);
 
