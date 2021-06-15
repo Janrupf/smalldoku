@@ -13,6 +13,7 @@ static uint32_t convert_rgba_to_mode(uefi_graphics_t *graphics, uint32_t rgb) {
                    ((rgb & 0x00FF00) >> 8) |
                    ((rgb & 0x0000FF) << 8);
 
+        case PixelBltOnly:
         case PixelBlueGreenRedReserved8BitPerColor:
             return rgb;
 
@@ -23,6 +24,10 @@ static uint32_t convert_rgba_to_mode(uefi_graphics_t *graphics, uint32_t rgb) {
 }
 
 static void set_pixel(uefi_graphics_t *graphics, uint32_t x, uint32_t y, uint32_t native_color) {
+    if(x > graphics->width || y > graphics->height) {
+        return;
+    }
+
     char *framebuffer_base = graphics->pixel_buffer ? graphics->pixel_buffer
                                                     : (char *) graphics->protocol->Mode->FrameBufferBase;
     uint32_t pixels_per_scan_line = graphics->pixel_buffer ? graphics->width
@@ -121,9 +126,9 @@ uefi_graphics_init_status_t uefi_graphics_initialize(smalldoku_uefi_application_
                 continue;
             }
 
-            Print(u"Considering video mode %d with %dx%d, current mode is %d with %dx%d\n",
-                  mode_i, mode_information->HorizontalResolution, mode_information->VerticalResolution,
-                  most_suitable_mode_id, most_suitable_width, most_suitable_height);
+            DbgPrint(D_INFO, (const unsigned char *) "Considering video mode %d with %dx%d, current mode is %d with %dx%d\n",
+                     mode_i, mode_information->HorizontalResolution, mode_information->VerticalResolution,
+                     most_suitable_mode_id, most_suitable_width, most_suitable_height);
             if (mode_information->PixelFormat != PixelBitMask) {
                 if (
                         (!most_suitable_width || !most_suitable_height) ||
@@ -172,10 +177,10 @@ uefi_graphics_init_status_t uefi_graphics_initialize(smalldoku_uefi_application_
             out->pixel_format = most_suitable_mode.PixelFormat;
 
             if (most_suitable_mode.PixelFormat != PixelBltOnly) {
-                Print(u"Using direct framebuffer for video operations!\n");
+                DbgPrint(D_INFO, (const unsigned char *) "Using direct framebuffer for video operations!\n");
                 out->pixel_buffer = NULL;
             } else {
-                Print(u"Using backbuffer for video operations!\n");
+                DbgPrint(D_INFO, (const unsigned char *) "Using backbuffer for video operations!\n");
                 application->boot_services->AllocatePool(
                         EfiLoaderData,
                         sizeof(uint32_t) * out->width * out->height,

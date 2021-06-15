@@ -10,8 +10,6 @@
 const uint32_t SCALE = 80;
 const uint32_t WIDTH = SMALLDOKU_GRID_WIDTH * SCALE;
 const uint32_t HEIGHT = SMALLDOKU_GRID_HEIGHT * SCALE;
-const uint32_t PADDING_X = (1920 / 2) - (WIDTH / 2);
-const uint32_t PADDING_Y = (1080 / 2) - (HEIGHT / 2);
 
 #define _STR_MACRO2(x) #x
 #define _STR_MACRO(x) _STR_MACRO2(x)
@@ -30,8 +28,24 @@ INCLUDE_BINARY(char, cursor_raw, SMALLDOKU_UEFI_CURSOR_FILE);
 #define I_MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define I_MAX(a, b) (((a) > (b)) ? (a) : (b))
 
+__attribute__((unused)) static void num_to_string(char buffer[32], uint32_t num) {
+    uint32_t cp = num;
+    uint8_t write_head = 0;
+    while (cp != 0) {
+        write_head++;
+        cp /= 10;
+    }
+
+    buffer[write_head--] = '\0';
+
+    do {
+        buffer[write_head--] = (char) ('0' + (num % 10));
+        num = num / 10;
+    } while (num > 0);
+}
+
 static EFI_STATUS report_fatal_error(EFI_SYSTEM_TABLE *system_table, uefi_graphics_t *graphics, const char *error) {
-    uefi_graphics_draw_rect(graphics, 0, 0, 1920, 1080, 0xFF0000);
+    uefi_graphics_draw_rect(graphics, 0, 0, graphics->width, graphics->height, 0xFF0000);
     uefi_graphics_draw_text(graphics, 20, 20, error, 0xFFFFFF);
 
     system_table->BootServices->Stall(1000 * 1000 * 10);
@@ -39,14 +53,17 @@ static EFI_STATUS report_fatal_error(EFI_SYSTEM_TABLE *system_table, uefi_graphi
 }
 
 static void draw(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid), uint32_t mouse_x, uint32_t mouse_y) {
-    uefi_graphics_draw_rect(graphics, 0, 0, 1920, 1080, 0xFFFFFF);
+    uefi_graphics_draw_rect(graphics, 0, 0, graphics->width, graphics->height, 0xFFFFFF);
+
+    uint32_t padding_x = (graphics->width / 2) - (WIDTH / 2);
+    uint32_t padding_y = (graphics->height / 2) - (HEIGHT / 2);
 
     for (uint8_t row = 0; row < SMALLDOKU_GRID_HEIGHT; row++) {
         for (uint8_t col = 0; col < SMALLDOKU_GRID_WIDTH; col++) {
             uint8_t value = smalldoku_get_cell_value(grid, row, col);
 
-            uint32_t rect_start_x = PADDING_X + (col * SCALE);
-            uint32_t rect_start_y = PADDING_Y + (row * SCALE);
+            uint32_t rect_start_x = padding_x + (col * SCALE);
+            uint32_t rect_start_y = padding_y + (row * SCALE);
 
             if (grid[row][col].type == SMALLDOKU_GENERATED_CELL) {
                 uefi_graphics_draw_rect(graphics, rect_start_x, rect_start_y, SCALE, SCALE, 0xCCCCCC);
@@ -68,8 +85,8 @@ static void draw(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid), uint32_t mouse
                 uint32_t text_width = uefi_graphics_text_width(graphics, display_text);
                 uint32_t text_height = uefi_graphics_text_height(graphics);
 
-                uint32_t text_x = PADDING_X + (col * SCALE) + (SCALE / 2) - (text_width / 2);
-                uint32_t text_y = PADDING_Y + (row * SCALE) + (SCALE / 2) - (text_height / 2);
+                uint32_t text_x = padding_x + (col * SCALE) + (SCALE / 2) - (text_width / 2);
+                uint32_t text_y = padding_y + (row * SCALE) + (SCALE / 2) - (text_height / 2);
 
                 uefi_graphics_draw_text(graphics, text_x, text_y, display_text, 0x000000);
             }
@@ -77,8 +94,8 @@ static void draw(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid), uint32_t mouse
     }
 
     for (uint8_t col = 0; col <= SMALLDOKU_GRID_WIDTH; col++) {
-        uint32_t start_x = PADDING_X + (col * SCALE);
-        uint32_t start_y = PADDING_Y;
+        uint32_t start_x = padding_x + (col * SCALE);
+        uint32_t start_y = padding_y;
 
         if (col % SMALLDOKU_SQUARE_WIDTH == 0) {
             uefi_graphics_draw_rect(graphics, start_x - 2, start_y, 5, HEIGHT, 0x000000);
@@ -88,8 +105,8 @@ static void draw(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid), uint32_t mouse
     }
 
     for (uint8_t row = 0; row <= SMALLDOKU_GRID_HEIGHT; row++) {
-        uint32_t start_x = PADDING_X;
-        uint32_t start_y = PADDING_Y + (row * SCALE);
+        uint32_t start_x = padding_x;
+        uint32_t start_y = padding_y + (row * SCALE);
 
         if (row % SMALLDOKU_SQUARE_HEIGHT == 0) {
             uefi_graphics_draw_rect(graphics, start_x, start_y - 2, WIDTH, 5, 0x000000);
@@ -115,7 +132,7 @@ static uint8_t generate_random_number(uint8_t min, uint8_t max) {
 
 __attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_table) {
     InitializeLib(image_handle, system_table);
-    smalldoku_uefi_application_t application = { system_table, system_table->BootServices, image_handle };
+    smalldoku_uefi_application_t application = {system_table, system_table->BootServices, image_handle};
 
     Print(u"Smalldoku starting!\n");
 
@@ -160,23 +177,25 @@ __attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_
         return report_fatal_error(system_table, &graphics, "Pointer resolution x is 0!");
     }
 
-    uint32_t mouse_x = 1920 / 2;
-    uint32_t mouse_y = 1080 / 2;
+    int64_t mouse_x = 1920 / 2;
+    int64_t mouse_y = 1080 / 2;
     draw(&graphics, grid, mouse_x, mouse_y);
 
     pointer_protocol->Reset(pointer_protocol, TRUE);
 
-    while (1) {
+    uint8_t x = 0;
+    *(&x) = 1;
+
+    while (x) {
         uint64_t event_index;
         system_table->BootServices->WaitForEvent(1, &pointer_protocol->WaitForInput, &event_index);
 
         EFI_SIMPLE_POINTER_STATE pointer_state;
         pointer_protocol->GetState(pointer_protocol, &pointer_state);
 
-        mouse_x = I_MIN(0, I_MAX(1920, mouse_x + pointer_state.RelativeMovementX));
-        mouse_y = I_MIN(0, I_MAX(1080, mouse_y + pointer_state.RelativeMovementY));
+        mouse_x = I_MAX(0, I_MIN(graphics.width, mouse_x + (pointer_state.RelativeMovementX / ((int64_t) pointer_protocol->Mode->ResolutionX))));
+        mouse_y = I_MAX(0, I_MIN(graphics.height, mouse_y + (pointer_state.RelativeMovementY / ((int64_t) pointer_protocol->Mode->ResolutionY))));
         draw(&graphics, grid, mouse_x, mouse_y);
-        uefi_graphics_draw_text(&graphics, 20, 20, "Pointer moved!", 0x000000);
     }
 
     system_table->BootServices->Stall(1000 * 1000 * 30);
