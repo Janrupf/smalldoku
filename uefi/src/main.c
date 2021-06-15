@@ -44,6 +44,19 @@ __attribute__((unused)) static void num_to_string(char buffer[32], uint32_t num)
     } while (num > 0);
 }
 
+static uint8_t generate_random_number(uint8_t min, uint8_t max) {
+    uint32_t generated_value;
+    _rdrand32_step(&generated_value);
+
+    return generated_value % (max + 1 - min) + min;
+}
+
+static void reset_grid(SMALLDOKU_GRID(grid)) {
+    smalldoku_init(grid);
+    smalldoku_fill_grid(grid, generate_random_number);
+    smalldoku_hammer_grid(grid, 5, generate_random_number);
+}
+
 static EFI_STATUS report_fatal_error(EFI_SYSTEM_TABLE *system_table, uefi_graphics_t *graphics, const char *error) {
     uefi_graphics_draw_rect(graphics, 0, 0, graphics->width, graphics->height, 0xFF0000);
     uefi_graphics_draw_text(graphics, 20, 20, error, 0xFFFFFF);
@@ -119,15 +132,72 @@ static void draw(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid), uint32_t mouse
     uefi_graphics_flush(graphics);
 }
 
-static uint8_t generate_random_number(uint8_t min, uint8_t max) {
-    static uint8_t counter = 0;
-    counter++;
+static void handle_click(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid), uint32_t mouse_x, uint32_t mouse_y) {
+    for (uint8_t row = 0; row < SMALLDOKU_GRID_HEIGHT; row++) {
+        for (uint8_t col = 0; col < SMALLDOKU_GRID_WIDTH; col++) {
+            grid[row][col].user_data = 0x0;
+        }
+    }
 
-    uint32_t generated_value;
-    // _rdrand32_step(&generated_value);
-    generated_value = counter;
+    uint32_t padding_x = (graphics->width / 2) - (WIDTH / 2);
+    uint32_t padding_y = (graphics->height / 2) - (HEIGHT / 2);
 
-    return generated_value % (max + 1 - min) + min;
+    uint32_t grid_x = mouse_x - padding_x;
+    if (grid_x > WIDTH) {
+        return;
+    }
+
+    uint32_t grid_y = mouse_y - padding_y;
+    if (grid_y > HEIGHT) {
+        return;
+    }
+
+    uint32_t col = grid_x / SCALE;
+    uint32_t row = grid_y / SCALE;
+
+    if (grid[row][col].type == SMALLDOKU_USER_CELL) {
+        grid[row][col].user_data = (void *) 0x1;
+    }
+}
+
+static void handle_key(SMALLDOKU_GRID(grid), CHAR16 scan_code) {
+    switch (scan_code) {
+        case L'r': {
+            reset_grid(grid);
+            break;
+        }
+
+        case 'c': {
+            for (uint8_t row = 0; row < SMALLDOKU_GRID_HEIGHT; row++) {
+                for (uint8_t col = 0; col < SMALLDOKU_GRID_WIDTH; col++) {
+                    if (grid[row][col].type == SMALLDOKU_USER_CELL) {
+                        if (grid[row][col].user_value == grid[row][col].value) {
+                            grid[row][col].user_data = (void *) 0x2;
+                        } else {
+                            grid[row][col].user_data = (void *) 0x3;
+                        }
+                    }
+                }
+            }
+        }
+
+        default: {
+            uint8_t number = scan_code - L'0';
+            if (number < 1 || number > 9) {
+                return;
+            }
+
+            for (uint8_t row = 0; row < SMALLDOKU_GRID_HEIGHT; row++) {
+                for (uint8_t col = 0; col < SMALLDOKU_GRID_WIDTH; col++) {
+                    if (grid[row][col].user_data == (void *) 0x1) {
+                        grid[row][col].user_value = number;
+                    }
+                }
+            }
+
+            break;
+        }
+    }
 }
 
 __attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_table) {
@@ -168,17 +238,15 @@ __attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_
         return report_fatal_error(system_table, &graphics, "Failed to find a text input protocol!");
     }
 
-    SMALLDOKU_GRID(grid);
-    smalldoku_init(grid);
-    smalldoku_fill_grid(grid, generate_random_number);
-    smalldoku_hammer_grid(grid, 5, generate_random_number);
-
     if (pointer_protocol->Mode->ResolutionY == 0) {
         return report_fatal_error(system_table, &graphics, "Pointer resolution x is 0!");
     }
 
-    int64_t mouse_x = 1920 / 2;
-    int64_t mouse_y = 1080 / 2;
+    SMALLDOKU_GRID(grid);
+    reset_grid(grid);
+
+    int64_t mouse_x = graphics.width / 2;
+    int64_t mouse_y = graphics.height / 2;
     draw(&graphics, grid, mouse_x, mouse_y);
 
     pointer_protocol->Reset(pointer_protocol, TRUE);
@@ -187,14 +255,41 @@ __attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_
     *(&x) = 1;
 
     while (x) {
+        EFI_EVENT events[2] = {pointer_protocol->WaitForInput, text_input_protocol->WaitForKeyEx};
         uint64_t event_index;
-        system_table->BootServices->WaitForEvent(1, &pointer_protocol->WaitForInput, &event_index);
+        if (EFI_ERROR(system_table->BootServices->WaitForEvent(2, events, &event_index))) {
+            return report_fatal_error(system_table, &graphics, "Failed to wait for events!");
+        }
 
-        EFI_SIMPLE_POINTER_STATE pointer_state;
-        pointer_protocol->GetState(pointer_protocol, &pointer_state);
+        switch (event_index) {
+            case 0: {
+                EFI_SIMPLE_POINTER_STATE pointer_state;
+                pointer_protocol->GetState(pointer_protocol, &pointer_state);
 
-        mouse_x = I_MAX(0, I_MIN(graphics.width, mouse_x + (pointer_state.RelativeMovementX / ((int64_t) pointer_protocol->Mode->ResolutionX))));
-        mouse_y = I_MAX(0, I_MIN(graphics.height, mouse_y + (pointer_state.RelativeMovementY / ((int64_t) pointer_protocol->Mode->ResolutionY))));
+                mouse_x = I_MAX(0, I_MIN(graphics.width, mouse_x + (pointer_state.RelativeMovementX /
+                                                                    ((int64_t) pointer_protocol->Mode->ResolutionX))));
+                mouse_y = I_MAX(0, I_MIN(graphics.height, mouse_y + (pointer_state.RelativeMovementY /
+                                                                     ((int64_t) pointer_protocol->Mode->ResolutionY))));
+
+                if (pointer_state.LeftButton || pointer_state.RightButton) {
+                    handle_click(&graphics, grid, mouse_x, mouse_y);
+                }
+
+                break;
+            }
+
+            case 1: {
+                EFI_KEY_DATA data;
+                text_input_protocol->ReadKeyStrokeEx(text_input_protocol, &data);
+
+                handle_key(grid, data.Key.UnicodeChar);
+                break;
+            }
+
+            default:
+                break;
+        }
+
         draw(&graphics, grid, mouse_x, mouse_y);
     }
 
