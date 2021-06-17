@@ -48,7 +48,7 @@ static void create_window(Display **display, int *screen, Window *window, Atom *
 static GC create_gc(Display *display, int x11_screen, Window window) {
     XGCValues gc_values;
     GC gc = XCreateGC(display, window, 0, &gc_values);
-    if (gc < 0) {
+    if (!gc) {
         fprintf(stderr, "Failed to create GC!\n");
         exit(1);
     }

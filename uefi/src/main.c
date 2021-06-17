@@ -46,7 +46,7 @@ static EFI_STATUS report_fatal_error(EFI_SYSTEM_TABLE *system_table, uefi_graphi
 }
 
 static void redraw(uefi_graphics_t *graphics, smalldoku_core_ui_t *ui, uint32_t mouse_x, uint32_t mouse_y) {
-    uefi_graphics_set_fill(graphics, 0xFFFFFFFF);
+    uefi_graphics_set_fill(graphics, 0xFFFFFF00);
     uefi_graphics_draw_rect(graphics, 0, 0, graphics->width, graphics->height);
 
     smalldoku_core_ui_draw_centered(ui);

@@ -7,4 +7,4 @@ set(SMALLDOKU_CORE_SOURCE
 
 add_library(smalldoku-core STATIC ${SMALLDOKU_CORE_SOURCE})
 target_include_directories(smalldoku-core PUBLIC ${SMALLDOKU_CORE_INCLUDE_DIR})
-target_compile_options(smalldoku-core PRIVATE -ffreestanding -nostdlib -nostdinc -Werror -Wall -pedantic -fno-stack-protector -mno-red-zone)
+target_compile_options(smalldoku-core PRIVATE ${SMALLDOKU_STANDALONE_CFLAGS})

@@ -8,5 +8,5 @@ set(SMALLDOKU_CORE_UI_SOURCE
 
 add_library(smalldoku-core-ui STATIC ${SMALLDOKU_CORE_UI_SOURCE})
 target_include_directories(smalldoku-core-ui PUBLIC ${SMALLDOKU_CORE_UI_INCLUDE_DIR})
-target_compile_options(smalldoku-core-ui PRIVATE -ffreestanding -nostdlib -nostdinc -Werror -Wall -pedantic -fno-stack-protector -mno-red-zone)
+target_compile_options(smalldoku-core-ui PRIVATE ${SMALLDOKU_STANDALONE_CFLAGS})
 target_link_libraries(smalldoku-core-ui PUBLIC smalldoku-core)
