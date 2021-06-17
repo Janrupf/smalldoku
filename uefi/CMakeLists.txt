@@ -4,6 +4,7 @@
 
 # Options
 option(ENABLE_UEFI_QEMU_RUN YES)
+option(ENABLE_UEFI_INSTALL NO)
 
 # Find the EFI library, we link against it
 find_package(EFI REQUIRED)
@@ -12,6 +13,7 @@ find_package(EFI REQUIRED)
 set(SMALLDOKU_UEFI_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/include")
 set(SMALLDOKU_UEFI_SOURCE
         src/main.c
+        src/uefi-input.c
         src/uefi-graphics.c)
 
 # Additional resource files
@@ -82,4 +84,16 @@ if(ENABLE_UEFI_RUN)
             COMMAND ${COMMON_QEMU_COMMAND}
             WORKING_DIRECTORY "${UEFI_RUN_DIR}"
             DEPENDS "${UEFI_BOOT_FILE_TARGET}")
+endif()
+
+if(ENABLE_UEFI_INSTALL)
+    get_target_property(UEFI_INSTALL_FILE_TO_INSTALL smalldoku-uefi EFI_IMAGE_FILE)
+    set(UEFI_INSTALL_EFI_VOLUME "/boot")
+
+    set(UEFI_INSTALL_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/install-smalldoku-uefi.cmake")
+    configure_file("${CMAKE_CURRENT_LIST_DIR}/install-smalldoku-uefi.cmake.in" ${UEFI_INSTALL_SCRIPT} @ONLY)
+
+    add_custom_target(smalldoku-uefi-install
+            COMMAND "${CMAKE_COMMAND}" -P "${UEFI_INSTALL_SCRIPT}"
+            COMMENT "Running UEFI install script")
 endif()
