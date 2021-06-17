@@ -4,7 +4,17 @@
 
 static EFI_GUID GRAPHICS_PROTOCOL_GUID = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
 
-#define MIN_NUM(a, b) (((a) < (b)) ? (a) : (b))
+#define I_MIN(a, b) (((a) < (b)) ? (a) : (b))
+
+static uint32_t strlen(const char *str) {
+    uint32_t len = 0;
+    while (*str) {
+        len++;
+        str++;
+    }
+
+    return len;
+}
 
 static uint32_t convert_rgba_to_mode(uefi_graphics_t *graphics, uint32_t rgb) {
     switch (graphics->protocol->Mode->Info->PixelFormat) {
@@ -24,7 +34,7 @@ static uint32_t convert_rgba_to_mode(uefi_graphics_t *graphics, uint32_t rgb) {
 }
 
 static void set_pixel(uefi_graphics_t *graphics, uint32_t x, uint32_t y, uint32_t native_color) {
-    if(x > graphics->width || y > graphics->height) {
+    if (x > graphics->width || y > graphics->height) {
         return;
     }
 
@@ -36,14 +46,19 @@ static void set_pixel(uefi_graphics_t *graphics, uint32_t x, uint32_t y, uint32_
     *((uint32_t *) (framebuffer_base + 4 * pixels_per_scan_line * y + 4 * x)) = native_color;
 }
 
-static uint32_t strlen(const char *str) {
-    uint32_t len = 0;
-    while (*str) {
-        len++;
-        str++;
+static void query_size(uefi_graphics_t *graphics, uint32_t *width, uint32_t *height) {
+    *width = graphics->width;
+    *height = graphics->height;
+}
+
+static void query_text_size(uefi_graphics_t *graphics, const char *text, uint32_t *width, uint32_t *height) {
+    if (width) {
+        *width = uefi_graphics_text_width(graphics, text);
     }
 
-    return len;
+    if (height) {
+        *height = uefi_graphics_text_height(graphics);
+    }
 }
 
 uefi_graphics_init_status_t uefi_graphics_initialize(smalldoku_uefi_application_t *application, uefi_graphics_t *out) {
@@ -126,7 +141,8 @@ uefi_graphics_init_status_t uefi_graphics_initialize(smalldoku_uefi_application_
                 continue;
             }
 
-            DbgPrint(D_INFO, (const unsigned char *) "Considering video mode %d with %dx%d, current mode is %d with %dx%d\n",
+            DbgPrint(D_INFO,
+                     (const unsigned char *) "Considering video mode %d with %dx%d, current mode is %d with %dx%d\n",
                      mode_i, mode_information->HorizontalResolution, mode_information->VerticalResolution,
                      most_suitable_mode_id, most_suitable_width, most_suitable_height);
             if (mode_information->PixelFormat != PixelBitMask) {
@@ -146,7 +162,7 @@ uefi_graphics_init_status_t uefi_graphics_initialize(smalldoku_uefi_application_
                     application->boot_services->CopyMem(
                             &most_suitable_mode,
                             mode_information,
-                            MIN_NUM(sizeof(most_suitable_mode), mode_information_size)
+                            I_MIN(sizeof(most_suitable_mode), mode_information_size)
                     );
                 }
             }
@@ -169,12 +185,20 @@ uefi_graphics_init_status_t uefi_graphics_initialize(smalldoku_uefi_application_
 
             application->boot_services->FreePool(handles);
 
+            out->query_size = (smalldoku_query_size_fn) query_size;
+            out->query_text_size = (smalldoku_query_text_size_fn) query_text_size;
+            out->set_fill = (smalldoku_set_fill_fn) uefi_graphics_set_fill;
+            out->draw_rect = (smalldoku_draw_rect_fn) uefi_graphics_draw_rect;
+            out->draw_text = (smalldoku_draw_text_fn) uefi_graphics_draw_text;
+            out->request_redraw = (smalldoku_request_redraw_fn) uefi_graphics_request_redraw;
+
             out->protocol = opened_protocol;
             out->font = NULL;
             out->font_scale = 0;
             out->width = most_suitable_mode.HorizontalResolution;
             out->height = most_suitable_mode.VerticalResolution;
             out->pixel_format = most_suitable_mode.PixelFormat;
+            out->should_redraw = TRUE;
 
             if (most_suitable_mode.PixelFormat != PixelBltOnly) {
                 DbgPrint(D_INFO, (const unsigned char *) "Using direct framebuffer for video operations!\n");
@@ -209,35 +233,25 @@ void uefi_graphics_set_font(uefi_graphics_t *graphics, uefi_graphics_psf_font_t 
     graphics->font_scale = font_scale;
 }
 
-void uefi_graphics_draw_rect(
-        uefi_graphics_t *graphics,
-        uint32_t x,
-        uint32_t y,
-        uint32_t width,
-        uint32_t height,
-        uint32_t color
-) {
-    uint32_t real_color = convert_rgba_to_mode(graphics, color);
+void uefi_graphics_set_fill(uefi_graphics_t *graphics, uint32_t color) {
+    graphics->fill_color = convert_rgba_to_mode(graphics, color);
+}
+
+void uefi_graphics_draw_rect(uefi_graphics_t *graphics, uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
+    uint32_t color = graphics->fill_color;
 
     for (uint32_t cx = x; cx <= x + width; cx++) {
         for (uint32_t cy = y; cy <= y + height; cy++) {
-            set_pixel(graphics, cx, cy, real_color);
+            set_pixel(graphics, cx, cy, color);
         }
     }
 }
 
-uint32_t uefi_graphics_text_width(uefi_graphics_t *graphics, const char *text) {
-    uint32_t len = strlen(text);
-    return (len * graphics->font->width + len) * graphics->font_scale;
-}
-
-uint32_t uefi_graphics_text_height(uefi_graphics_t *graphics) {
-    return graphics->font->height * graphics->font_scale;
-}
-
-void uefi_graphics_draw_text(uefi_graphics_t *graphics, uint32_t x, uint32_t y, const char *text, uint32_t color) {
+void uefi_graphics_draw_text(uefi_graphics_t *graphics, uint32_t x, uint32_t y, const char *text) {
     uint32_t bytes_per_line = (graphics->font->width + 7) / 8;
     uint32_t scale = graphics->font_scale;
+
+    y -= graphics->font->height * graphics->font_scale;
 
     while (*text) {
         char c = *text;
@@ -251,8 +265,7 @@ void uefi_graphics_draw_text(uefi_graphics_t *graphics, uint32_t x, uint32_t y, 
 
             for (uint32_t current_x = 0; current_x < graphics->font->width; current_x++) {
                 if (*((uint32_t *) glyph) & mask) {
-                    uefi_graphics_draw_rect(graphics, (current_x * scale) + x, (current_y * scale) + y, scale, scale,
-                                            color);
+                    uefi_graphics_draw_rect(graphics, (current_x * scale) + x, (current_y * scale) + y, scale, scale);
                 }
 
                 mask >>= 1;
@@ -264,6 +277,15 @@ void uefi_graphics_draw_text(uefi_graphics_t *graphics, uint32_t x, uint32_t y, 
         text++;
         x += graphics->font->width * scale + 1;
     }
+}
+
+uint32_t uefi_graphics_text_width(uefi_graphics_t *graphics, const char *text) {
+    uint32_t len = strlen(text);
+    return (len * graphics->font->width + len) * graphics->font_scale;
+}
+
+uint32_t uefi_graphics_text_height(uefi_graphics_t *graphics) {
+    return graphics->font->height * graphics->font_scale;
 }
 
 void uefi_graphics_draw_raw(
@@ -287,6 +309,10 @@ void uefi_graphics_draw_raw(
     }
 }
 
+void uefi_graphics_request_redraw(uefi_graphics_t *graphics) {
+    graphics->should_redraw = TRUE;
+}
+
 void uefi_graphics_flush(uefi_graphics_t *graphics) {
     if (graphics->pixel_buffer) {
         graphics->protocol->Blt(
@@ -299,4 +325,6 @@ void uefi_graphics_flush(uefi_graphics_t *graphics) {
                 0
         );
     }
+
+    graphics->should_redraw = FALSE;
 }

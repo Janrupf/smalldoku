@@ -17,7 +17,7 @@ add_custom_target(smalldoku-uefi-resources
 add_library(smalldoku-uefi SHARED ${SMALLDOKU_UEFI_SOURCE})
 add_dependencies(smalldoku-uefi smalldoku-uefi-resources)
 target_include_directories(smalldoku-uefi PUBLIC ${SMALLDOKU_UEFI_INCLUDE_DIR})
-target_link_libraries(smalldoku-uefi PUBLIC smalldoku-core EFI)
+target_link_libraries(smalldoku-uefi PUBLIC smalldoku-core smalldoku-core-ui EFI)
 target_compile_options(smalldoku-uefi PUBLIC -fno-stack-protector -ffreestanding -nostdlib -Werror -Wall -pedantic -mrdrnd)
 target_compile_definitions(smalldoku-uefi PUBLIC
         GNU_EFI_USE_MS_ABI=1

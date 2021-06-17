@@ -1,15 +1,14 @@
 #include <efi.h>
 #include <efilib.h>
 
-#include <smalldoku/smalldoku.h>
 #include <immintrin.h>
+
+#include <smalldoku-core-ui/smalldoku-core-ui.h>
 
 #include "smalldoku-uefi/smalldoku-uefi.h"
 #include "smalldoku-uefi/smalldoku-uefi-graphics.h"
 
 const uint32_t SCALE = 80;
-const uint32_t WIDTH = SMALLDOKU_GRID_WIDTH * SCALE;
-const uint32_t HEIGHT = SMALLDOKU_GRID_HEIGHT * SCALE;
 
 #define _STR_MACRO2(x) #x
 #define _STR_MACRO(x) _STR_MACRO2(x)
@@ -28,176 +27,31 @@ INCLUDE_BINARY(char, cursor_raw, SMALLDOKU_UEFI_CURSOR_FILE);
 #define I_MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define I_MAX(a, b) (((a) > (b)) ? (a) : (b))
 
-__attribute__((unused)) static void num_to_string(char buffer[32], uint32_t num) {
-    uint32_t cp = num;
-    uint8_t write_head = 0;
-    while (cp != 0) {
-        write_head++;
-        cp /= 10;
-    }
-
-    buffer[write_head--] = '\0';
-
-    do {
-        buffer[write_head--] = (char) ('0' + (num % 10));
-        num = num / 10;
-    } while (num > 0);
-}
-
 static uint8_t generate_random_number(uint8_t min, uint8_t max) {
     uint32_t generated_value;
-    _rdrand32_step(&generated_value);
+    _rdrand32_step(&generated_value); // TODO: Better RNG
 
     return generated_value % (max + 1 - min) + min;
 }
 
-static void reset_grid(SMALLDOKU_GRID(grid)) {
-    smalldoku_init(grid);
-    smalldoku_fill_grid(grid, generate_random_number);
-    smalldoku_hammer_grid(grid, 5, generate_random_number);
-}
-
 static EFI_STATUS report_fatal_error(EFI_SYSTEM_TABLE *system_table, uefi_graphics_t *graphics, const char *error) {
-    uefi_graphics_draw_rect(graphics, 0, 0, graphics->width, graphics->height, 0xFF0000);
-    uefi_graphics_draw_text(graphics, 20, 20, error, 0xFFFFFF);
+    uefi_graphics_set_fill(graphics, 0xFFFF0000);
+    uefi_graphics_draw_rect(graphics, 0, 0, graphics->width, graphics->height);
+
+    uefi_graphics_set_fill(graphics, 0xFFFFFFFF);
+    uefi_graphics_draw_text(graphics, 20, 20, error);
 
     system_table->BootServices->Stall(1000 * 1000 * 10);
     return EFI_UNSUPPORTED;
 }
 
-static void draw(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid), uint32_t mouse_x, uint32_t mouse_y) {
-    uefi_graphics_draw_rect(graphics, 0, 0, graphics->width, graphics->height, 0xFFFFFF);
+static void redraw(uefi_graphics_t *graphics, smalldoku_core_ui_t *ui, uint32_t mouse_x, uint32_t mouse_y) {
+    uefi_graphics_set_fill(graphics, 0xFFFFFFFF);
+    uefi_graphics_draw_rect(graphics, 0, 0, graphics->width, graphics->height);
 
-    uint32_t padding_x = (graphics->width / 2) - (WIDTH / 2);
-    uint32_t padding_y = (graphics->height / 2) - (HEIGHT / 2);
-
-    for (uint8_t row = 0; row < SMALLDOKU_GRID_HEIGHT; row++) {
-        for (uint8_t col = 0; col < SMALLDOKU_GRID_WIDTH; col++) {
-            uint8_t value = smalldoku_get_cell_value(grid, row, col);
-
-            uint32_t rect_start_x = padding_x + (col * SCALE);
-            uint32_t rect_start_y = padding_y + (row * SCALE);
-
-            if (grid[row][col].type == SMALLDOKU_GENERATED_CELL) {
-                uefi_graphics_draw_rect(graphics, rect_start_x, rect_start_y, SCALE, SCALE, 0xCCCCCC);
-            } else if (grid[row][col].user_data == (void *) 0x1) {
-                uefi_graphics_draw_rect(graphics, rect_start_x, rect_start_y, SCALE, SCALE, 0xCCCC00);
-            } else if (grid[row][col].user_data == (void *) 0x2) {
-                uefi_graphics_draw_rect(graphics, rect_start_x, rect_start_y, SCALE, SCALE, 0x55AA55);
-            } else if (grid[row][col].user_data == (void *) 0x3) {
-                uefi_graphics_draw_rect(graphics, rect_start_x, rect_start_y, SCALE, SCALE, 0xAA5555);
-            }
-
-            if (value != 0) {
-                char display_char = (char) (value + '0');
-
-                char display_text[2];
-                display_text[0] = display_char;
-                display_text[1] = '\0';
-
-                uint32_t text_width = uefi_graphics_text_width(graphics, display_text);
-                uint32_t text_height = uefi_graphics_text_height(graphics);
-
-                uint32_t text_x = padding_x + (col * SCALE) + (SCALE / 2) - (text_width / 2);
-                uint32_t text_y = padding_y + (row * SCALE) + (SCALE / 2) - (text_height / 2);
-
-                uefi_graphics_draw_text(graphics, text_x, text_y, display_text, 0x000000);
-            }
-        }
-    }
-
-    for (uint8_t col = 0; col <= SMALLDOKU_GRID_WIDTH; col++) {
-        uint32_t start_x = padding_x + (col * SCALE);
-        uint32_t start_y = padding_y;
-
-        if (col % SMALLDOKU_SQUARE_WIDTH == 0) {
-            uefi_graphics_draw_rect(graphics, start_x - 2, start_y, 5, HEIGHT, 0x000000);
-        } else {
-            uefi_graphics_draw_rect(graphics, start_x - 1, start_y, 3, HEIGHT, 0x000000);
-        }
-    }
-
-    for (uint8_t row = 0; row <= SMALLDOKU_GRID_HEIGHT; row++) {
-        uint32_t start_x = padding_x;
-        uint32_t start_y = padding_y + (row * SCALE);
-
-        if (row % SMALLDOKU_SQUARE_HEIGHT == 0) {
-            uefi_graphics_draw_rect(graphics, start_x, start_y - 2, WIDTH, 5, 0x000000);
-        } else {
-            uefi_graphics_draw_rect(graphics, start_x, start_y - 1, WIDTH, 3, 0x000000);
-        }
-    }
-
+    smalldoku_core_ui_draw_centered(ui);
     uefi_graphics_draw_raw(graphics, mouse_x, mouse_y, 24, 24, &cursor_raw);
     uefi_graphics_flush(graphics);
-}
-
-static void handle_click(uefi_graphics_t *graphics, SMALLDOKU_GRID(grid), uint32_t mouse_x, uint32_t mouse_y) {
-    for (uint8_t row = 0; row < SMALLDOKU_GRID_HEIGHT; row++) {
-        for (uint8_t col = 0; col < SMALLDOKU_GRID_WIDTH; col++) {
-            grid[row][col].user_data = 0x0;
-        }
-    }
-
-    uint32_t padding_x = (graphics->width / 2) - (WIDTH / 2);
-    uint32_t padding_y = (graphics->height / 2) - (HEIGHT / 2);
-
-    uint32_t grid_x = mouse_x - padding_x;
-    if (grid_x > WIDTH) {
-        return;
-    }
-
-    uint32_t grid_y = mouse_y - padding_y;
-    if (grid_y > HEIGHT) {
-        return;
-    }
-
-    uint32_t col = grid_x / SCALE;
-    uint32_t row = grid_y / SCALE;
-
-    if (grid[row][col].type == SMALLDOKU_USER_CELL) {
-        grid[row][col].user_data = (void *) 0x1;
-    }
-}
-
-static void handle_key(SMALLDOKU_GRID(grid), CHAR16 scan_code) {
-    switch (scan_code) {
-        case L'r': {
-            reset_grid(grid);
-            break;
-        }
-
-        case 'c': {
-            for (uint8_t row = 0; row < SMALLDOKU_GRID_HEIGHT; row++) {
-                for (uint8_t col = 0; col < SMALLDOKU_GRID_WIDTH; col++) {
-                    if (grid[row][col].type == SMALLDOKU_USER_CELL) {
-                        if (grid[row][col].user_value == grid[row][col].value) {
-                            grid[row][col].user_data = (void *) 0x2;
-                        } else {
-                            grid[row][col].user_data = (void *) 0x3;
-                        }
-                    }
-                }
-            }
-        }
-
-        default: {
-            uint8_t number = scan_code - L'0';
-            if (number < 1 || number > 9) {
-                return;
-            }
-
-            for (uint8_t row = 0; row < SMALLDOKU_GRID_HEIGHT; row++) {
-                for (uint8_t col = 0; col < SMALLDOKU_GRID_WIDTH; col++) {
-                    if (grid[row][col].user_data == (void *) 0x1) {
-                        grid[row][col].user_value = number;
-                    }
-                }
-            }
-
-            break;
-        }
-    }
 }
 
 __attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_table) {
@@ -242,19 +96,18 @@ __attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_
         return report_fatal_error(system_table, &graphics, "Pointer resolution x is 0!");
     }
 
-    SMALLDOKU_GRID(grid);
-    reset_grid(grid);
+    smalldoku_core_ui_t ui = smalldoku_core_ui_new((smalldoku_graphics_t *) &graphics, generate_random_number);
+    smalldoku_core_ui_begin_game(&ui);
+    smalldoku_core_ui_draw_centered(&ui);
 
     int64_t mouse_x = graphics.width / 2;
     int64_t mouse_y = graphics.height / 2;
-    draw(&graphics, grid, mouse_x, mouse_y);
+
+    redraw(&graphics, &ui, mouse_x, mouse_y);
 
     pointer_protocol->Reset(pointer_protocol, TRUE);
 
-    uint8_t x = 0;
-    *(&x) = 1;
-
-    while (x) {
+    while (TRUE) {
         EFI_EVENT events[2] = {pointer_protocol->WaitForInput, text_input_protocol->WaitForKeyEx};
         uint64_t event_index;
         if (EFI_ERROR(system_table->BootServices->WaitForEvent(2, events, &event_index))) {
@@ -266,13 +119,20 @@ __attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_
                 EFI_SIMPLE_POINTER_STATE pointer_state;
                 pointer_protocol->GetState(pointer_protocol, &pointer_state);
 
-                mouse_x = I_MAX(0, I_MIN(graphics.width, mouse_x + (pointer_state.RelativeMovementX /
-                                                                    ((int64_t) pointer_protocol->Mode->ResolutionX))));
-                mouse_y = I_MAX(0, I_MIN(graphics.height, mouse_y + (pointer_state.RelativeMovementY /
-                                                                     ((int64_t) pointer_protocol->Mode->ResolutionY))));
+                int64_t new_mouse_x = I_MAX(0, I_MIN(graphics.width, mouse_x + (pointer_state.RelativeMovementX /
+                                                                                ((int64_t) pointer_protocol->Mode->ResolutionX))));
+                int64_t new_mouse_y = I_MAX(0, I_MIN(graphics.height, mouse_y + (pointer_state.RelativeMovementY /
+                                                                                 ((int64_t) pointer_protocol->Mode->ResolutionY))));
+
+                if (new_mouse_x != mouse_x || new_mouse_y != mouse_y) {
+                    uefi_graphics_request_redraw(&graphics);
+                }
+
+                mouse_x = new_mouse_x;
+                mouse_y = new_mouse_y;
 
                 if (pointer_state.LeftButton || pointer_state.RightButton) {
-                    handle_click(&graphics, grid, mouse_x, mouse_y);
+                    smalldoku_core_ui_click(&ui, mouse_x, mouse_y);
                 }
 
                 break;
@@ -282,7 +142,10 @@ __attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_
                 EFI_KEY_DATA data;
                 text_input_protocol->ReadKeyStrokeEx(text_input_protocol, &data);
 
-                handle_key(grid, data.Key.UnicodeChar);
+                if (data.Key.UnicodeChar <= 255) {
+                    char key = (char) data.Key.UnicodeChar;
+                    smalldoku_core_ui_key(&ui, key);
+                }
                 break;
             }
 
@@ -290,7 +153,9 @@ __attribute__((unused)) EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_
                 break;
         }
 
-        draw(&graphics, grid, mouse_x, mouse_y);
+        if (graphics.should_redraw) {
+            redraw(&graphics, &ui, mouse_x, mouse_y);
+        }
     }
 
     system_table->BootServices->Stall(1000 * 1000 * 30);

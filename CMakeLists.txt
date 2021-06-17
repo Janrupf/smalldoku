@@ -15,5 +15,6 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_LIST_DIR}/cmake")
 # Add subprojects #
 ###################
 add_subdirectory(core)
+add_subdirectory(core-ui)
 add_subdirectory(linux-ui)
 add_subdirectory(uefi)

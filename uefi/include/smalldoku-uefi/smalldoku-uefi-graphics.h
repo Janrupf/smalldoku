@@ -2,6 +2,8 @@
 
 #include <efi.h>
 
+#include <smalldoku-core-ui/smalldoku-core-graphics.h>
+
 #include "smalldoku-uefi/smalldoku-uefi.h"
 
 /**
@@ -24,6 +26,8 @@ typedef struct uefi_graphics_psf_font uefi_graphics_psf_font_t;
  * Container for an UEFI graphics context.
  */
 struct uefi_graphics {
+    SMALLDOKU_GRAPHICS_STRUCT_MEMBERS;
+
     /**
      * The protocol used for drawing.
      */
@@ -58,6 +62,16 @@ struct uefi_graphics {
      * The height of the screen in pixels.
      */
     uint32_t height;
+
+    /**
+     * The current fill color.
+     */
+    uint32_t fill_color;
+
+    /**
+     * Determines whether the context needs to be redrawn.
+     */
+    BOOLEAN should_redraw;
 };
 
 typedef struct uefi_graphics uefi_graphics_t;
@@ -108,6 +122,14 @@ uefi_graphics_init_status_t uefi_graphics_initialize(smalldoku_uefi_application_
 void uefi_graphics_set_font(uefi_graphics_t *graphics, uefi_graphics_psf_font_t *font, uint8_t font_scale);
 
 /**
+ * Sets the fill color.
+ *
+ * @param graphics the graphics context to set the fill color for
+ * @param color the new fill color in the format 0xAARRGGBB
+ */
+void uefi_graphics_set_fill(uefi_graphics_t *graphics, uint32_t color);
+
+/**
  * Draws a rectangle.
  *
  * @param graphics the graphics context to draw with
@@ -115,16 +137,24 @@ void uefi_graphics_set_font(uefi_graphics_t *graphics, uefi_graphics_psf_font_t 
  * @param y the upper left y coordinate of the rectangle
  * @param width the width of the rectangle
  * @param height the height of the rectangle
- * @param color the color of the rectangle
  */
 void uefi_graphics_draw_rect(
         uefi_graphics_t *graphics,
         uint32_t x,
         uint32_t y,
         uint32_t width,
-        uint32_t height,
-        uint32_t color
+        uint32_t height
 );
+
+/**
+ * Draws a string.
+ *
+ * @param graphics the graphics context to draw with
+ * @param x the x coordinate to start drawing at
+ * @param y the y coordinate to start drawing at
+ * @param text the text to draw
+ */
+void uefi_graphics_draw_text(uefi_graphics_t *graphics, uint32_t x, uint32_t y, const char *text);
 
 /**
  * Calculates the width of a text in pixels.
@@ -145,17 +175,6 @@ uint32_t uefi_graphics_text_width(uefi_graphics_t *graphics, const char *text);
 uint32_t uefi_graphics_text_height(uefi_graphics_t *graphics);
 
 /**
- * Draws a string.
- *
- * @param graphics the graphics context to draw with
- * @param x the x coordinate to start drawing at
- * @param y the y coordinate to start drawing at
- * @param text the text to draw
- * @param color the color to draw the text in
- */
-void uefi_graphics_draw_text(uefi_graphics_t *graphics, uint32_t x, uint32_t y, const char *text, uint32_t color);
-
-/**
  * Draws raw byte data.
  *
  * @param graphics the graphics context to draw with
@@ -173,6 +192,13 @@ void uefi_graphics_draw_raw(
         uint32_t height,
         const void *data
 );
+
+/**
+ * Requests a redraw.
+ *
+ * @param graphics the graphics context which should be redrawn
+ */
+void uefi_graphics_request_redraw(uefi_graphics_t *graphics);
 
 /**
  * Flushes the currently buffered data to the display if required.
