@@ -200,7 +200,7 @@ uefi_graphics_init_status_t uefi_graphics_initialize(smalldoku_uefi_application_
             out->pixel_format = most_suitable_mode.PixelFormat;
             out->should_redraw = TRUE;
 
-            if (most_suitable_mode.PixelFormat != PixelBltOnly) {
+            /* if (most_suitable_mode.PixelFormat != PixelBltOnly) {
                 DbgPrint(D_INFO, (const unsigned char *) "Using direct framebuffer for video operations!\n");
                 out->pixel_buffer = NULL;
             } else {
@@ -210,7 +210,12 @@ uefi_graphics_init_status_t uefi_graphics_initialize(smalldoku_uefi_application_
                         sizeof(uint32_t) * out->width * out->height,
                         &out->pixel_buffer
                 );
-            }
+            } */
+            application->boot_services->AllocatePool(
+                    EfiLoaderData,
+                    sizeof(uint32_t) * out->width * out->height,
+                    &out->pixel_buffer
+            );
 
             return UEFI_GRAPHICS_OK;
         }
